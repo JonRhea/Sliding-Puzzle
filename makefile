@@ -1,16 +1,19 @@
-slidingpuzzle: 	slidingpuzzle-v3.o sp-pipe-client.o sp-pipe-server.o 
-					gcc slidingpuzzle-v3.o sp-pipe-client.o sp-pipe-server.o -o slidingpuzzle-v3
+slidingpuzzle: 	slidingpuzzle-v4.o sp-tcp-client.o sp-tcp-server.o sp-game.o
+					gcc slidingpuzzle-v4.o sp-tcp-client.o sp-tcp-server.o sp-game.o -o slidingpuzzle-v4
 									
-slidingpuzzle-v3.o:   slidingpuzzle-v3.c
-						gcc -c slidingpuzzle-v3.c
+slidingpuzzle-v4.o:   slidingpuzzle-v4.c
+						gcc -c slidingpuzzle-v4.c
 			
 											
-sp-pipe-client.o:	sp-pipe-client.c
-						gcc -c sp-pipe-client.c
+sp-tcp-client.o:	sp-tcp-client.c
+						gcc -c sp-tcp-client.c
 											
-sp-pipe-server.o:	sp-pipe-server.c
-						gcc -c sp-pipe-server.c
+sp-tcp-server.o:	sp-tcp-server.c
+						gcc -c sp-tcp-server.c
+						
+sp-game.o:	sp-game.c
+				gcc -c sp-game.c				
 							
 											
 clean:	
-		rm sp-pipe-server.o sp-pipe-client.o slidingpuzzle-v3.o slidingpuzzle-v3					
+		rm sp-game.o sp-tcp-server.o sp-tcp-client.o slidingpuzzle-v4.o slidingpuzzle-v4			
