@@ -1,10 +1,5 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <string.h>
+#include "includes.h"
+#include "prototypes.h"
 
 int boardSize;
 int *board;
@@ -12,108 +7,84 @@ int *board;
 int zeroTile;
 int tileMove;
 
-extern int clientToServer[2];
-extern int serverToClient[2];
+int clientID;
 
-enum command {cmd_pnt, cmd_move, cmd_quit, cmd_new, cmd_save, cmd_load};
+int tileToMove;
+char filename[12];
 
-int gameInterface();
-void firstSetUp();
-int serverWait();
-int isMoveValid(int tile);
-int * createGame();
-void randomizeBoard();
-void swap(int *a, int *b);
-void printBoard();
-void moveTile(int tile);
-int checkWon();
-int saveGame(char * filename);
-int * loadGame(char * filename);
-void teardown();
+//get client_socket to send info to client
+extern int client_socket;
 
-/*
-* Creates a 4x4 board and prints it on start up.
+/**
+* Set up the game for the first time.
+* @param clientCount: Uses client count from server to set clientID
 */
-void firstSetUp(){	
+void firstSetUp(int clientCount){	
+	clientID = clientCount;
 	boardSize = 4;
 	
 	board = createGame();
 	
 	//tell client game has been set up
 	int setUpFinished = 0;
-	write(serverToClient[1], &setUpFinished, sizeof(int));
+	send(client_socket, &setUpFinished, sizeof(int), 0);
 	
 	printBoard();
-	serverWait();
+	serverWait(clientID);
 }//end firstSetUp
 
-/*
-* Wait for input command from client, interpret it, adn executes corresponding functions
-*/
-int serverWait(){
+//Helper functions are use for clairty and so that they can be in sp-game.c
 
-	enum command clientCmd;
-	int tileToMove;
-	char filename[12];
-	
-	while(clientCmd != cmd_quit){
-		
-		//check to see if game is won
-		if(checkWon() == 1){
-			int returnValue = 1;
-			write(serverToClient[1], &returnValue, sizeof(int)); 
-			teardown();
-			return 0;
-		}//end if
-		else{
-			int returnValue = 0;
-			write(serverToClient[1], &returnValue, sizeof(int)); 
-		}//end else
-			
-		//read command from client
-		read(clientToServer[0], &clientCmd, sizeof(clientCmd));
-			
-		if(clientCmd == cmd_pnt){
-			printBoard();
-		}//end if
-		else if(clientCmd == cmd_move){
-			read(clientToServer[0], &tileToMove, sizeof(int));
-			if(isMoveValid(tileToMove) == 1){
-				moveTile(tileToMove);
-			}//end if 
-		}//end if
-		else if(clientCmd == cmd_quit){
-			teardown();
-			close(serverToClient[1]);
-			close(clientToServer[0]);
-		}//end if
-		else if(clientCmd == cmd_new){
-			read(clientToServer[0], &boardSize, sizeof(int));
-			free(board);
-			board = createGame();
-			printBoard();
-		}//end if
-		else if(clientCmd == cmd_save){
-			int returnValueSave;
-			read(clientToServer[0], filename, 12);
-			if(saveGame(filename) == 1){ //if save is successful
-					returnValueSave = 5;
-					write(serverToClient[1], &returnValueSave, sizeof(int));
-				}//end if
-				else{ //if save is not successful
-					returnValueSave = 6;
-					write(serverToClient[1], &returnValueSave, sizeof(int));
-				}//end else
-		}//end if
-		else if(clientCmd == cmd_load){
-			read(clientToServer[0], filename, 12);
-			board = loadGame(filename);
-		}//end if
-		else{ //default case, although this should never be hit b/c client takes care of unknown command
-			//do nothing, error handeled by client
-		}//end else		
-	}//end while
-}//end serverWait
+/**
+* Helper function for move command
+*/
+void doMove(){
+	recv(client_socket, &tileToMove, sizeof(int), 0);
+	if(isMoveValid(tileToMove) == 1){
+		moveTile(tileToMove);
+	}//end if 
+}//end doMove
+
+/**
+* Helper function for quit command
+*/
+void doQuit(){
+	teardown();
+}//end doQuit
+
+/**
+* Helper function for new command
+*/
+void doNew(){
+	recv(client_socket, &boardSize, sizeof(int), 0);
+	free(board);
+	board = createGame();
+	printBoard();
+}//end doNew
+
+/**
+* Helper function for save command
+*/
+void doSave(){
+	int returnValueSave;
+	recv(client_socket, filename, 12, 0);
+	if(saveGame(filename) == 1){ //if save is successful
+		returnValueSave = 5;					
+		send(client_socket, &returnValueSave, sizeof(int), 0);
+	}//end if
+	else{ //if save is not successful
+		returnValueSave = 6;
+		send(client_socket, &returnValueSave, sizeof(int), 0);
+	}//end else
+}//end doSave
+
+/**
+* Helper function for load command
+*/
+void doLoad(){
+	recv(client_socket, filename, 12, 0);
+	board = loadGame(filename);
+}//end doLoad
 
 /*
 * Creates the board and fills it with the tiles
@@ -139,7 +110,7 @@ int * createGame(){
 	return board;
 }//end createGame
 
-/*
+/**
 * Randomly selects two places of the board to swap
 */
 void randomizeBoard(){
@@ -151,7 +122,7 @@ void randomizeBoard(){
 	}//end for
 }//end randomize
 
-/*
+/**
 * Swaps two pointers. This is used to swap two locations on the board,
 * which is randomly decided in createGame.
 * @param *a: The first element to be swapped
@@ -163,28 +134,31 @@ void swap(int *a, int *b){
 	*b = temp;
 }//end swap
 
-/*
+/**
 * Sends the boardSize and board to client so the client can print the board.
 * @param * board: The current board
 */
 void printBoard(){
 	int clientDone;
 	//send boardSize to client
-	write(serverToClient[1], &boardSize, sizeof(boardSize));
-	read(clientToServer[0], &clientDone, sizeof(clientDone));
+	send(client_socket, &boardSize, sizeof(boardSize), 0);
+	recv(client_socket, &clientDone, sizeof(clientDone), 0);
+	//printf("cliendDone %d\n", clientDone);
 	
 	//send board to client now that the client knows the size
-	write(serverToClient[1], board, (boardSize * boardSize) * sizeof(int));
-	read(clientToServer[0], &clientDone, sizeof(clientDone));
+	send(client_socket, board, (boardSize * boardSize) * sizeof(int), 0);
+	recv(client_socket, &clientDone, sizeof(clientDone), 0);
 	
+	//printf("cliendDone board %d\n", clientDone);
 	//wait for client to finish printing the board
-	read(clientToServer[0], &clientDone, sizeof(clientDone));
+	recv(client_socket, &clientDone, sizeof(clientDone), 0);
 
+	//printf("cliendDone print  %d\n", clientDone);
 	int returnValue = 2;
-	write(serverToClient[1], &returnValue, sizeof(int));
+	send(client_socket, &returnValue, sizeof(int), 0);
 }//end printBoard
 
-/*
+/**
 * Checks whether a tile can be moved (if a zero is next to it)
 * @param * board: The current board
 * @param tile: Tile number to move
@@ -196,19 +170,19 @@ int isMoveValid(int tile){
 	//check if free tile was entered
 	if(tile == 0){
 		int returnValue = 3;
-		write(serverToClient[1], &returnValue, sizeof(int));
+		send(client_socket, &returnValue, sizeof(int), 0);
 		return 0;
 	}//end if
 	
 	//check if a tile that does not exist was entered.
 	if((tile < 0)){
 		int returnValue = 3;
-		write(serverToClient[1], &returnValue, sizeof(int));
+		send(client_socket, &returnValue, sizeof(int), 0);
 		return 0;
 	}//end if
 	if(tile > boardSizeB - 1){
 		int returnValue = 3;
-		write(serverToClient[1], &returnValue, sizeof(int));
+		send(client_socket, &returnValue, sizeof(int), 0);
 		return 0;
 	}//end if
 	
@@ -252,13 +226,13 @@ int isMoveValid(int tile){
 			//if all four checks fail, the tile is not moveable.
 					
 			int returnValue = 3;
-			write(serverToClient[1], &returnValue, sizeof(int));
+			send(client_socket, &returnValue, sizeof(int), 0);
 			return 0;
 		}//end if		
 	}//end for
 }//end isMoveValid
 
-/*
+/**
 * Moves a tile to the free spot (aka 0)
 * @param * board: The current board.
 * @param tile: The tile to be moved
@@ -272,11 +246,11 @@ void moveTile(int tile){
 	board[tileMove] = 0;
 
 	int returnValue = 4;
-	write(serverToClient[1], &returnValue, sizeof(int));
+	send(client_socket, &returnValue, sizeof(int), 0);
 	
 }//end moveTile
 
-/*
+/**
 * Checks to see if the numbers are sorted from 1 to last tile (game has been won)
 * NOTE: The placement of the free (0) tile does not matter
 * @param * board: The current board.
@@ -302,7 +276,7 @@ int checkWon(){
 	return 1;
 }//end if
 
-/*
+/**
 * Saves the board size and current board to a file.
 * The first line of the file will be the board size, the rest are the contents of board
 * @param * board: The current board
@@ -330,7 +304,7 @@ int saveGame(char * filename){
 	return 1;
 }//end saveGame
 
-/*
+/**
 * Loads a saved board from savefile.txt
 * @param * board: The curremt board. Will be freed in this method.
 * @return newBoard if the board is successfully loaded. If not, the current board
@@ -345,7 +319,7 @@ int * loadGame(char * filename){
 	
 	if(f == NULL){
 		returnValue = 8;
-		write(serverToClient[1], &returnValue, sizeof(int));
+		send(client_socket, &returnValue, sizeof(int), 0);
 		return board;
 	}//end if
 	
@@ -358,7 +332,7 @@ int * loadGame(char * filename){
 	//easy way to check is by looking at line 1 (size) and see if it's within the range
 	if(boardSize < 2 || boardSize > 10){
 		returnValue = 8;
-		write(serverToClient[1], &returnValue, sizeof(int));
+		send(client_socket, &returnValue, sizeof(int), 0);
 		return board;
 	}//if 
 	
@@ -380,16 +354,18 @@ int * loadGame(char * filename){
 	fclose(f);
 	
 	returnValue = 7;
-	write(serverToClient[1], &returnValue, sizeof(int));
-	read(clientToServer[0], &returnValue, sizeof(int));
+	send(client_socket, &returnValue, sizeof(int), 0);
+	recv(client_socket, &returnValue, sizeof(int), 0);
 	printBoard();
 	return board;
 }//end loadGame
 
 /*
-* Frees the board
+* Frees the board and closes the client socket
 * @param * board: The current board. Only here to be freed.
 */
 void teardown(){
 	free(board);
+	close(client_socket);
+	printf("Client closed\n");
 }//end endGame

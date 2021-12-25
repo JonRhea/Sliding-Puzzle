@@ -1,20 +1,68 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
+#include "includes.h"
+#include "prototypes.h"
 
-int gameInterface();
-void printBoardFromServer();
-void readReturnValue();
-
-extern int clientToServer[2];
-extern int serverToClient[2];
+#define PORT 3490
 
 enum command {cmd_pnt, cmd_move, cmd_quit, cmd_new, cmd_save, cmd_load};
 
-/*
+int numberPort;
+int enteredInfo;
+int sock = 0;
+struct sockaddr_in serv_addr;
+
+/**
+* Creates a socket to connect and attemps to connect to a server
+* @param *ip: The ip the user entered, this must not be NULL
+* @param port: The port entered by the user. Can be 0, which means use default port 3490
+*/	
+void connectToServer(char *ip, long port){
+	
+	//create socket
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+        printf("\n Socket creation error \n");
+        exit(1);
+    }//end if
+   
+	//set ipv4
+    serv_addr.sin_family = AF_INET;
+	
+	//if port is 0, then no port was entered
+	if(port == 0){
+		enteredInfo = 0;
+		serv_addr.sin_port = htons(PORT);
+	}//end if
+	//if port was entered, use it
+	else{
+		enteredInfo = 1;
+		numberPort = port;
+		serv_addr.sin_port = numberPort;
+	}//end else
+	
+	//convert ip string
+	if(inet_pton(AF_INET, ip, &serv_addr.sin_addr)<=0){
+		printf("Invalid address. Address not supported or not entered!\n");
+		exit(1);
+	}//end if
+	
+	//attempt connection
+    printf("Client: trying to connect...\n");
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        printf("Connection Failed\n");
+        exit(1);
+    }//end if
+	else{
+		if(enteredInfo == 0){
+			printf("Client: connected to %s on port %d\n", ip, PORT);
+		}//end if
+		else{
+			printf("Client: connected to %s on port %d\n", ip, numberPort);
+		}//end else
+	}//end else
+	
+	gameInterface();
+}//end connectToServer
+
+/**
 * Prints out UI of game.
 * User inputs are sent to server for interpretation via enum
 */
@@ -56,12 +104,13 @@ int gameInterface(){
 		if(goodCmd == 0){
 			//see if game has been won
 			int returnValueOfGameWon;
-			read(serverToClient[0], &returnValueOfGameWon, sizeof(int));
+			recv(sock, &returnValueOfGameWon, sizeof(int), 0);
 			if(returnValueOfGameWon == 1){
 				printf("\n**You won the game!**\n");
 				return 0;
 			}//end if
 			else{
+				//printf("The game has not been won!\n");
 				//do nothing
 			}//end else
 		}//end if
@@ -74,27 +123,28 @@ int gameInterface(){
 		switch(choice){
 			case 'p':
 				clientCmd = cmd_pnt;
-				write(clientToServer[1], &clientCmd, sizeof(cmd_pnt));
+				send(sock, &clientCmd, sizeof(cmd_pnt), 0);
 				printBoardFromServer();
 				readReturnValue();
 			break;
 			case 'm':
 				clientCmd = cmd_move;
-				write(clientToServer[1], &clientCmd, sizeof(cmd_move));
+				send(sock, &clientCmd, sizeof(cmd_move), 0);
 				printf("Enter a tile to move.\n>");
 				int tile;
 				scanf("%d", &tile);
-				write(clientToServer[1], &tile, sizeof(int));
+				send(sock, &tile, sizeof(int), 0);
 				readReturnValue();
 			break;
 			case 'q':
 				clientCmd = cmd_quit;
 				printf("Ending the game.\n");
-				write(clientToServer[1], &clientCmd, sizeof(cmd_quit));
+				send(sock, &clientCmd, sizeof(cmd_quit), 0);
+				close(sock);
 			break;
 			case 'n':
 				clientCmd = cmd_new;
-				write(clientToServer[1], &clientCmd, sizeof(cmd_new));
+				send(sock, &clientCmd, sizeof(cmd_new), 0);
 				okaySize = 0;
 				while(okaySize == 0){
 					printf("Enter the size of the board (between 2 and 10).\n>");
@@ -107,23 +157,22 @@ int gameInterface(){
 						okaySize = 1;
 					}//end else
 				}//end while
-				write(clientToServer[1], &newSize, sizeof(int));
+				send(sock, &newSize, sizeof(int), 0);
 				printBoardFromServer();
 				readReturnValue();
 			break;
 			case 's':
 				clientCmd = cmd_save;
-				write(clientToServer[1], &clientCmd, sizeof(cmd_save));
-				write(clientToServer[1], filename, 12);
+				send(sock, &clientCmd, sizeof(cmd_save), 0);
+				send(sock, filename, 12, 0);
 				readReturnValue();
 			break;
 			case 'l':
 				clientCmd = cmd_load;
-				write(clientToServer[1], &clientCmd, sizeof(cmd_load));
-				write(clientToServer[1], filename, 12);
+				send(sock, &clientCmd, sizeof(cmd_load), 0);
+				send(sock, filename, 12, 0);
 				readReturnValue(); //load game
-				printBoardFromServer();
-				readReturnValue(); //print board
+				
 			break;
 			default: 
 				printf("Unknown command. Please try again.\n");
@@ -133,7 +182,7 @@ int gameInterface(){
 	}//end while
 }//end gameInterface
 
-/*
+/**
 * Read return values from server functions and perform certain actions depending on value
 * Values are listed in the function
 */
@@ -141,7 +190,8 @@ void readReturnValue(){
 	
 	//read and store return value
 	int returnValue;
-	read(serverToClient[0], &returnValue, sizeof(int));
+	recv(sock, &returnValue, sizeof(int), 0);
+	//printf("returnValue: %d\n", returnValue);
 	
 	switch(returnValue){
 			case 0: //firstSetUp() finished
@@ -164,7 +214,9 @@ void readReturnValue(){
 			break;	
 			case 7: //loadGame() returned the new board
 				printf("Game loaded successfully!\n");
-				write(clientToServer[1], &returnValue, sizeof(int)); //so the previous message does not print in the board
+				send(sock, &returnValue, sizeof(int), 0); //so the previous message does not print in the board
+				printBoardFromServer();
+				readReturnValue(); //print board
 			break;
 			case 8: //loadGame() returned the old board (load failed)
 				printf("Game could not be loaded!\n");
@@ -175,7 +227,7 @@ void readReturnValue(){
 	}//end switch
 }//end readReturnValue
 
-/*
+/**
 * Prints the board. The board and board size is send by the server
 */
 void printBoardFromServer(){
@@ -183,13 +235,13 @@ void printBoardFromServer(){
 	int boardSize;
 	int *board;
 	
-	read(serverToClient[0], &boardSize, sizeof(boardSize));
-	write(clientToServer[1], &done, sizeof(done));
-	
+	recv(sock, &boardSize, sizeof(boardSize), 0);
+	send(sock, &done, sizeof(done), 0);
+		
 	board = (int*)malloc((boardSize * boardSize) * sizeof(int));
 	
-	read(serverToClient[0], board, (boardSize * boardSize) * sizeof(int));
-	write(clientToServer[1], &done, sizeof(done));
+	recv(sock, board, (boardSize * boardSize) * sizeof(int), 0);
+	send(sock, &done, sizeof(done), 0);
 	
 	for(int i = 0; i < boardSize * boardSize; i++){
 		if(board[i]!= 0){
@@ -210,5 +262,5 @@ void printBoardFromServer(){
 	free(board);//we are done with this board
 	
 	//tell server client has finished printing the board
-	write(clientToServer[1], &done, sizeof(done));
+	send(sock, &done, sizeof(done), 0);
 }//end printBoardFromServer
