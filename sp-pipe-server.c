@@ -1,116 +1,119 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-
-int isMoveValid(int * board, int tile);
-int * createGame();
-void swap(int *a, int *b);
-void printBoard(int * board);
-void moveTile(int * board, int tile);
-int checkWon(int * board);
-int saveGame(int * board);
-int * loadGame(int * board);
-void teardown(int * board);
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <string.h>
 
 int boardSize;
+int *board;
+
 int zeroTile;
 int tileMove;
 
-/*
-* Starts the program, containts the loop, and terminates the program
-* @return 0 The program has ended.
-*/
-int main(){
-	
-	printf("Setting up the game.\n");
-	
-	boardSize = 4;
-	int *boardPointer;
-	
-	boardPointer = createGame();
-	
-	
-	printBoard(boardPointer);
-	//where the user's input will be stored
-	char choice;
-	
-	//this is used to check if the board size is between 2 and 10 for option 'n'
-	int okaySize;
-	
-	/*Six optipons for input:
-	* 'p' - Prints the current board
-	* 'm' - User is prompted to enter a tile to move, then moves that tile
-	* 'q' - Quits the game (terminates the program)
-	* 'n' - Prompts the user for a new board size, then creates a new board
-	* 's' - Saves the current board to savefile.txt
-	* 'l' - Loads a board from savefile.txt
-	* Any other option resutls in an error message and an option to try again.*/
-	while(choice != 'q'){
+extern int clientToServer[2];
+extern int serverToClient[2];
 
-		printf("\nSelect and option:\np - Print the game state\nm - Move a tile\nq - Quit the game\nn - Create a new board\ns - Save the board\nl - Load a game from savefile\n>");
-		scanf("%s" , &choice);//get input from the user
+enum command {cmd_pnt, cmd_move, cmd_quit, cmd_new, cmd_save, cmd_load};
+
+int gameInterface();
+void firstSetUp();
+int serverWait();
+int isMoveValid(int tile);
+int * createGame();
+void randomizeBoard();
+void swap(int *a, int *b);
+void printBoard();
+void moveTile(int tile);
+int checkWon();
+int saveGame(char * filename);
+int * loadGame(char * filename);
+void teardown();
+
+/*
+* Creates a 4x4 board and prints it on start up.
+*/
+void firstSetUp(){	
+	boardSize = 4;
+	
+	board = createGame();
+	
+	//tell client game has been set up
+	int setUpFinished = 0;
+	write(serverToClient[1], &setUpFinished, sizeof(int));
+	
+	printBoard();
+	serverWait();
+}//end firstSetUp
+
+/*
+* Wait for input command from client, interpret it, adn executes corresponding functions
+*/
+int serverWait(){
+
+	enum command clientCmd;
+	int tileToMove;
+	char filename[12];
+	
+	while(clientCmd != cmd_quit){
 		
-		switch(choice){
-			case 'p':
-				printBoard(boardPointer);
-			break;
-			case 'm':
-				printf("Enter a tile to move.\n>");
-				int tile;
-				scanf("%d", &tile);
-				if(isMoveValid(boardPointer, tile) == 1){
-					moveTile(boardPointer, tile);
-				}//end if 
-			break;
-			case 'q':
-				printf("Ending the game.\n");
-				teardown(boardPointer);
-			break;
-			case 'n':
-				okaySize = 0;
-				while(okaySize == 0){
-					printf("Enter the size of the board (between 2 and 10).\n>");
-					scanf("%d", &boardSize);
-					
-					if(boardSize < 2 || boardSize > 10){
-						printf("Board size must be between 2 and 10. Please try again.\n\n");
-					}//end if
-					else{
-						okaySize = 1;
-					}//end else
-				}//end while
-				//free current board and create a new board
-				free(boardPointer);
-				boardPointer = createGame();
-				printf("A new board has been created.\n");
-				printBoard(boardPointer);
-			break;
-			case 's':
-				if(saveGame(boardPointer) == 1){
-					printf("The board was saved successfully.\n");
-				}//end if
-				else{
-					printf("The board could not be saved.\n");
-				}//end else
-			break;
-			case 'l':
-				boardPointer = loadGame(boardPointer);
-			break;
-			default:
-				printf("Unknown command. Please try again.\n");
-			
-		}//end switch
-		
-		//check after each action is the board has been solved
-		if(checkWon(boardPointer) == 1){
-			printf("You won the game!\n");
-			teardown(boardPointer);
+		//check to see if game is won
+		if(checkWon() == 1){
+			int returnValue = 1;
+			write(serverToClient[1], &returnValue, sizeof(int)); 
+			teardown();
 			return 0;
 		}//end if
+		else{
+			int returnValue = 0;
+			write(serverToClient[1], &returnValue, sizeof(int)); 
+		}//end else
+			
+		//read command from client
+		read(clientToServer[0], &clientCmd, sizeof(clientCmd));
+			
+		if(clientCmd == cmd_pnt){
+			printBoard();
+		}//end if
+		else if(clientCmd == cmd_move){
+			read(clientToServer[0], &tileToMove, sizeof(int));
+			if(isMoveValid(tileToMove) == 1){
+				moveTile(tileToMove);
+			}//end if 
+		}//end if
+		else if(clientCmd == cmd_quit){
+			teardown();
+			close(serverToClient[1]);
+			close(clientToServer[0]);
+		}//end if
+		else if(clientCmd == cmd_new){
+			read(clientToServer[0], &boardSize, sizeof(int));
+			free(board);
+			board = createGame();
+			printBoard();
+		}//end if
+		else if(clientCmd == cmd_save){
+			int returnValueSave;
+			read(clientToServer[0], filename, 12);
+			if(saveGame(filename) == 1){ //if save is successful
+					returnValueSave = 5;
+					write(serverToClient[1], &returnValueSave, sizeof(int));
+				}//end if
+				else{ //if save is not successful
+					returnValueSave = 6;
+					write(serverToClient[1], &returnValueSave, sizeof(int));
+				}//end else
+		}//end if
+		else if(clientCmd == cmd_load){
+			read(clientToServer[0], filename, 12);
+			board = loadGame(filename);
+		}//end if
+		else{ //default case, although this should never be hit b/c client takes care of unknown command
+			//do nothing, error handeled by client
+		}//end else		
 	}//end while
-		
-	return 0;
-}//end main
+}//end serverWait
 
 /*
 * Creates the board and fills it with the tiles
@@ -119,30 +122,34 @@ int main(){
 int * createGame(){
 	
 	int numberCounter = (boardSize * boardSize) - 1;
-	int *boardPointer;
-	boardPointer = (int*)malloc((boardSize * boardSize) * sizeof(int));
+	board = (int*)malloc((boardSize * boardSize) * sizeof(int));
 	
-	if(boardPointer == NULL){
+	if(board == NULL){
 		printf("Memeory not allocated. Exiting.\n");
 		exit(0);
 	}//end if
 	
 	for(int i = 0; i < (boardSize * boardSize); i++){
-		boardPointer[i] = numberCounter;
-		//printf(" %d\n", boardPointer[i]);
+		board[i] = numberCounter;
 		--numberCounter;
 	}//end for
 	
-	//randomly swap two places in the board
+	randomizeBoard(board);
+
+	return board;
+}//end createGame
+
+/*
+* Randomly selects two places of the board to swap
+*/
+void randomizeBoard(){
 	srand(time(NULL));
 	int i;
 	for(i = (boardSize * boardSize) - 1; i > 0; i--){
 		int j = rand() % (i + 1);
-		swap(&boardPointer[i], &boardPointer[j]);
+		swap(&board[i], &board[j]);
 	}//end for
-
-	return boardPointer;
-}//end createGame
+}//end randomize
 
 /*
 * Swaps two pointers. This is used to swap two locations on the board,
@@ -157,28 +164,24 @@ void swap(int *a, int *b){
 }//end swap
 
 /*
-* Prints the current state of the board
+* Sends the boardSize and board to client so the client can print the board.
 * @param * board: The current board
 */
-void printBoard(int * board){
-	for(int i = 0; i < boardSize * boardSize; i++){
-		if(board[i]!= 0){
-			//printf("Printing contents\n");
-			printf("%3d ", board[i]);
-		}
-		else
-			//this 3 space print will create the free space in the printed board
-			printf("    ");
-
-		//print a new line whenever a row is finished printing
-		//skip for i = 0 because program will crash if 0 % x is trying to be calculated
-		if(i != 0){
-			if(i % boardSize == boardSize - 1){
-				printf("\n");
-			}//end if
-		}//end if
-	}//end for
+void printBoard(){
+	int clientDone;
+	//send boardSize to client
+	write(serverToClient[1], &boardSize, sizeof(boardSize));
+	read(clientToServer[0], &clientDone, sizeof(clientDone));
 	
+	//send board to client now that the client knows the size
+	write(serverToClient[1], board, (boardSize * boardSize) * sizeof(int));
+	read(clientToServer[0], &clientDone, sizeof(clientDone));
+	
+	//wait for client to finish printing the board
+	read(clientToServer[0], &clientDone, sizeof(clientDone));
+
+	int returnValue = 2;
+	write(serverToClient[1], &returnValue, sizeof(int));
 }//end printBoard
 
 /*
@@ -187,22 +190,25 @@ void printBoard(int * board){
 * @param tile: Tile number to move
 * @return 1 if tile is moveable, 0 if not
 */
-int isMoveValid(int * board, int tile){
+int isMoveValid(int tile){
 	int boardSizeB = boardSize * boardSize;
 	
 	//check if free tile was entered
 	if(tile == 0){
-		printf("The free tile cannot be moved!\n");
+		int returnValue = 3;
+		write(serverToClient[1], &returnValue, sizeof(int));
 		return 0;
 	}//end if
 	
 	//check if a tile that does not exist was entered.
 	if((tile < 0)){
-		printf("Negative numbers cannot be used in this game.\n");
+		int returnValue = 3;
+		write(serverToClient[1], &returnValue, sizeof(int));
 		return 0;
 	}//end if
 	if(tile > boardSizeB - 1){
-		printf("Tile does not exist.\n");
+		int returnValue = 3;
+		write(serverToClient[1], &returnValue, sizeof(int));
 		return 0;
 	}//end if
 	
@@ -216,7 +222,6 @@ int isMoveValid(int * board, int tile){
 			zeroTile = i - boardSize;
 			if((i - boardSize) >= 0){ 
 				if(board[i - boardSize] == 0)
-					//zeroTileMove = i - boardSize;
 					return 1;
 			}//end if
 			
@@ -225,7 +230,6 @@ int isMoveValid(int * board, int tile){
 			zeroTile = i + 1;
 			if(i % boardSize != boardSize - 1){ 
 				if(board[i + 1] == 0)
-					//zeroTileMove = i + 1;
 					return 1;
 			}//end if
 				
@@ -234,7 +238,6 @@ int isMoveValid(int * board, int tile){
 			zeroTile = i + boardSize;
 			if((i + boardSize) <= boardSizeB - 1){
 				if(board[i + boardSize] == 0)
-					//zeroTileMove = i + boardSize;
 					return 1;
 			}//end if
 				
@@ -243,12 +246,13 @@ int isMoveValid(int * board, int tile){
 			zeroTile = i - 1;
 			if(i % boardSize != 0){
 				if(board[i - 1] == 0)
-					//zeroTileMove = i - 1;
 					return 1;
 			}//end if
 				
 			//if all four checks fail, the tile is not moveable.
-			printf("The tile cannot be moved.\n");
+					
+			int returnValue = 3;
+			write(serverToClient[1], &returnValue, sizeof(int));
 			return 0;
 		}//end if		
 	}//end for
@@ -259,15 +263,16 @@ int isMoveValid(int * board, int tile){
 * @param * board: The current board.
 * @param tile: The tile to be moved
 */
-void moveTile(int * board, int tile){
+void moveTile(int tile){
 	
 	//move tile to where the free tile is
 	board[zeroTile] = tile;
 	
 	//move free tile to where the tile is
 	board[tileMove] = 0;
-	
-	printf("The tile has been moved successfully.\n");
+
+	int returnValue = 4;
+	write(serverToClient[1], &returnValue, sizeof(int));
 	
 }//end moveTile
 
@@ -277,7 +282,7 @@ void moveTile(int * board, int tile){
 * @param * board: The current board.
 * @return 1 if the board is saved successfully, 0 is unsuccessful
 */
-int checkWon(int * board){
+int checkWon(){
 	
 	//tileChecker will check for the board order. ie; if tileChecker is 5, the tile to be checked should be 5
 	int tileChecker = 1;
@@ -302,14 +307,12 @@ int checkWon(int * board){
 * The first line of the file will be the board size, the rest are the contents of board
 * @param * board: The current board
 */
-int saveGame(int * board){
+int saveGame(char * filename){
 	FILE *f;
-	//the biggest board will be 10x10 (100) plus 1 for the size of the board (101)
-	char buffer[101];
-	f = fopen("savefile.txt", "w");
+	//the biggest board will be 10x10 (100) plus 1 for the size of the board (101);
+	f = fopen(filename, "w");
 	
 	if(f == NULL){
-		printf("Error opening savefile.\n");
 		return 0;
 	}//end if
 	
@@ -333,14 +336,16 @@ int saveGame(int * board){
 * @return newBoard if the board is successfully loaded. If not, the current board
 * will be returned so the user can continue with the game.
 */
-int * loadGame(int * board){
+int * loadGame(char * filename){
+	int returnValue;
 	FILE *f;
 	int *newBoard;
 	
-	f = fopen("savefile.txt", "r");
+	f = fopen(filename, "r");
 	
 	if(f == NULL){
-		printf("Error saving game to savefile.\n");
+		returnValue = 8;
+		write(serverToClient[1], &returnValue, sizeof(int));
 		return board;
 	}//end if
 	
@@ -352,16 +357,16 @@ int * loadGame(int * board){
 	//if something is wrong with the file, return board.
 	//easy way to check is by looking at line 1 (size) and see if it's within the range
 	if(boardSize < 2 || boardSize > 10){
-		printf("Error loading save data.\n");
+		returnValue = 8;
+		write(serverToClient[1], &returnValue, sizeof(int));
 		return board;
 	}//if 
 	
-	//teardown the current board and malloc the saved board
-	teardown(board);
-	newBoard = (int*)malloc((boardSize * boardSize) * sizeof(int));
+	//free the current board and malloc the saved board
+	free(board);
+	board = (int*)malloc((boardSize * boardSize) * sizeof(int));
 	
 	if(newBoard == NULL){
-		printf("Memeory not allocated. Exiting.\n");
 		exit(0);
 	}//end if
 	
@@ -369,20 +374,22 @@ int * loadGame(int * board){
 	for(i = 0; i < (boardSize * boardSize) + 1; i++){
 		//skip the first line of savefile.txt
 		if(i != 0)
-			fscanf(f, "%2d", &newBoard[i - 1]);
+			fscanf(f, "%2d", &board[i - 1]);
 	}//end for
 	
 	fclose(f);
 	
-	printf("Game loaded successfully.\n");
-	printBoard(newBoard);
-	return newBoard;
+	returnValue = 7;
+	write(serverToClient[1], &returnValue, sizeof(int));
+	read(clientToServer[0], &returnValue, sizeof(int));
+	printBoard();
+	return board;
 }//end loadGame
 
 /*
 * Frees the board
 * @param * board: The current board. Only here to be freed.
 */
-void teardown(int * board){
+void teardown(){
 	free(board);
 }//end endGame
